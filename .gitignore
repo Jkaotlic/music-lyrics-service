@@ -1,0 +1,28 @@
+# Secrets
+*.token
+*.secret
+config.secret.ps1
+
+# Runtime
+*.log
+*.log.*
+scan-state.json
+yandex.auth.failed
+yandex.signature.failed
+deployment.log
+
+# Backups
+backups/
+*.bak-v*
+
+# Editors
+.vscode/
+.idea/
+*.swp
+
+# OS
+Thumbs.db
+desktop.ini
+
+# Pester output
+testResults.xml
