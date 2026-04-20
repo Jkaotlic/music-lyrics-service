@@ -1,0 +1,23 @@
+# Install: sudo cp task-scheduler.task.example /usr/syno/etc/synoschedule.d/root/<next_id>.task
+#          sudo synoschedtask --rebuild
+#          sudo synoschedtask --restart
+#
+# To find the next available task id, run:
+#   ls /usr/syno/etc/synoschedule.d/root/ | sort -n | tail -1
+# then increment by 1.
+
+[Task]
+version = "1.0"
+name = "LyricsPipeline"
+state = "enabled"
+owner = "root"
+type = "user-defined"
+
+[Schedule]
+week = "1111111"
+run_hour = 0
+repeat_hour = 4
+last_work_hour = 23
+
+[Command]
+run_command = "/usr/bin/python3 /volume1/docker/lyrics-pipeline/lrclib_pipeline.py --config /volume1/docker/lyrics-pipeline/config.ini >> /volume1/docker/lyrics-pipeline/cron.log 2>&1"

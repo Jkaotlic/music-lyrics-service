@@ -1,0 +1,37 @@
+# Copy to config.ini and edit to match your system.
+[pipeline]
+# Root folder that will be scanned recursively for audio files.
+library_root = /volumeUSB1/usbshare/Music
+
+# File extensions (comma-separated)
+extensions = .flac,.mp3,.m4a,.ogg,.opus,.wav,.aac
+
+# Incremental state file — tracks mtime cursor to avoid re-scanning unchanged files
+state_path = /volume1/docker/lyrics-pipeline/pipeline.state
+
+# Log file
+log_path = /volume1/docker/lyrics-pipeline/pipeline.log
+
+# Providers to try, in order. First IsSynced result wins.
+# Available: lrclib, yandex
+providers = lrclib,yandex
+
+[lrclib]
+base_url = https://lrclib.net/api
+rate_limit_ms = 200
+
+[yandex]
+# Path to a file containing only the OAuth access_token string.
+# Chmod 600 recommended.
+token_path = /volume1/docker/lyrics-pipeline/yandex.token
+rate_limit_ms = 200
+match_duration_tolerance = 3
+match_levenshtein_max = 3
+user_agent = Yandex-Music-Windows/5.00
+# Public, documented in MarshalX/yandex-music-api
+hmac_secret = p93jhgh689SBReK6ghtw62
+# Required Android-client header — without it API returns 403
+client_header = YandexMusicAndroid/24023621
+# Runtime flag files: touched on 401/403, aged check triggers circuit-breaker
+auth_failed_flag = /volume1/docker/lyrics-pipeline/yandex.auth.failed
+signature_failed_flag = /volume1/docker/lyrics-pipeline/yandex.signature.failed
