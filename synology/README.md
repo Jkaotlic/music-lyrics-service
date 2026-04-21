@@ -130,6 +130,24 @@ Add to `/etc/crontab` or DSM user crontab:
 - Enable debug logging by editing the pipeline source or adding `--dry-run` to inspect NONE entries.
 - LRCLib has wider coverage for Western artists; Yandex is better for Russian-language music.
 
+**Cyrillic / non-ASCII tracks always return NONE; track titles look like `â?ï?`/mojibake in Navidrome/Subsonic clients**
+- Root cause: FLAC Vorbis tags are stored in cp1251 (legacy Windows tagger) instead of UTF-8.
+- Per Vorbis spec tags must be UTF-8. Navidrome and the lyrics providers both read strictly UTF-8, so a cp1251 tag becomes garbage and no API matches it.
+- Fix: run `tools/fix_cp1251_tags.py` to detect and repair in-place with per-file backup:
+  ```bash
+  # Dry-run first — shows which files would be touched
+  python3 tools/fix_cp1251_tags.py --library-root /volume1/music --dry-run
+
+  # Real fix (keeps originals in .fix-cp1251-backup-<timestamp>/)
+  python3 tools/fix_cp1251_tags.py --library-root /volume1/music
+
+  # Optional: different legacy encoding
+  python3 tools/fix_cp1251_tags.py --library-root /volume1/music --encoding cp1252
+  ```
+- Requires `metaflac` on PATH (`apt install flac` on Debian-based DSM, `opkg install flac` on Entware, or run inside a beets docker container which bundles it).
+- ASCII-only and already-UTF-8 files are skipped untouched.
+- After fix: Navidrome will re-read tags on its next scan cycle.
+
 **Python version mismatch**
 - Requires Python 3.10+. Check: `python3 --version`
 - On older DSM, install a newer Python via Entware: `opkg install python3`
