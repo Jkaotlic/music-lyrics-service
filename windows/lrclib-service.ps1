@@ -1,10 +1,13 @@
 param(
     [string]$LibraryPath = 'G:\Music\Library',
     [int]$ScanInterval = 300,
-    [string]$LogFile = 'C:\Tools\lrclib-service\lrclib.log',
+    [string]$LogFile = $null,   # defaults to <script-dir>\lrclib.log when null
     [switch]$OneShot,
     [switch]$DryRun
 )
+if (-not $LogFile) {
+    $LogFile = Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) 'lrclib.log'
+}
 
 $ErrorActionPreference = 'Continue'
 $ProgressPreference = 'SilentlyContinue'
@@ -41,9 +44,9 @@ foreach ($provName in $script:LyricsProviders) {
 $ffprobe = $null
 $candidates = @(
     'C:\Program Files\Navidrome\ffprobe.exe',
-    'C:\Tools\lrclib-service\ffprobe.exe',
+    (Join-Path $scriptRoot 'ffprobe.exe'),
     'C:\ffmpeg\bin\ffprobe.exe',
-    'C:\Users\user\AppData\Local\Microsoft\WinGet\Links\ffprobe.exe'
+    "$env:LOCALAPPDATA\Microsoft\WinGet\Links\ffprobe.exe"
 )
 foreach ($p in $candidates) {
     if (Test-Path $p) { $ffprobe = $p; break }
@@ -195,7 +198,7 @@ while ($true) {
         # Auto-embed lyrics into FLAC files after each scan
         if ($scanResult.ok -gt 0 -and -not $DryRun) {
             Log "Triggering embed-lyrics for $($scanResult.ok) new .lrc files..."
-            & powershell -ExecutionPolicy Bypass -File 'C:\Tools\lrclib-service\embed-lyrics.ps1' 2>$null
+            & powershell -ExecutionPolicy Bypass -File (Join-Path $scriptRoot 'embed-lyrics.ps1') 2>$null
         } elseif ($scanResult.ok -gt 0 -and $DryRun) {
             Log "DRY: would trigger embed-lyrics for $($scanResult.ok) new .lrc files"
         }
