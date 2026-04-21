@@ -1,7 +1,7 @@
 param(
-    [string]$LibraryPath = '',
+    [string]$LibraryPath = 'G:\Music\Library',
     [int]$ScanInterval = 300,
-    [string]$LogFile = '',
+    [string]$LogFile = 'C:\Tools\lrclib-service\lrclib.log',
     [switch]$OneShot,
     [switch]$DryRun
 )
@@ -9,6 +9,13 @@ param(
 $ErrorActionPreference = 'Continue'
 $ProgressPreference = 'SilentlyContinue'
 [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12 -bor [System.Net.SecurityProtocolType]::Tls13
+
+# Force UTF-8 for external process I/O. ffprobe emits UTF-8 JSON; PS 5.1 default
+# on RU locale is cp1251, which silently mangles Cyrillic tags mid-pipeline and
+# breaks Yandex artist/title matching for every non-Latin track.
+$OutputEncoding = [System.Text.Encoding]::UTF8
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+[Console]::InputEncoding = [System.Text.Encoding]::UTF8
 
 # Dot-source config (optional) and providers
 $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -30,21 +37,13 @@ foreach ($provName in $script:LyricsProviders) {
     }
 }
 
-# Resolve LogFile: param override > config default > script dir
-if (-not $LogFile) {
-    $LogFile = if ($script:LogPath) { $script:LogPath } else { Join-Path $scriptRoot 'lrclib.log' }
-}
-
-# Resolve LibraryPath: param override > config default > built-in default
-if (-not $LibraryPath) {
-    $LibraryPath = if ($script:LibraryRoot) { $script:LibraryRoot } else { 'G:\Music\Library' }
-}
-
 # --- Locate ffprobe ---
 $ffprobe = $null
 $candidates = @(
     'C:\Program Files\Navidrome\ffprobe.exe',
-    'C:\ffmpeg\bin\ffprobe.exe'
+    'C:\Tools\lrclib-service\ffprobe.exe',
+    'C:\ffmpeg\bin\ffprobe.exe',
+    'C:\Users\user\AppData\Local\Microsoft\WinGet\Links\ffprobe.exe'
 )
 foreach ($p in $candidates) {
     if (Test-Path $p) { $ffprobe = $p; break }
@@ -53,11 +52,11 @@ if (-not $ffprobe) {
     $gc = Get-Command ffprobe.exe -ErrorAction SilentlyContinue
     if ($gc) { $ffprobe = $gc.Source }
 }
-if (-not $ffprobe) { Write-Error "ffprobe not found. Install ffmpeg or Navidrome and ensure ffprobe.exe is on PATH."; exit 2 }
+if (-not $ffprobe) { Write-Error "ffprobe not found in any known location"; exit 2 }
 
 # --- Logging ---
 $logDir = Split-Path $LogFile -Parent
-if ($logDir -and -not (Test-Path $logDir)) { New-Item -ItemType Directory -Path $logDir -Force | Out-Null }
+if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Path $logDir -Force | Out-Null }
 
 function Log {
     param([string]$msg)
@@ -190,15 +189,13 @@ if ($OneShot) {
 }
 
 # Service mode
-$embedScript = Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) 'embed-lyrics.ps1'
-
 while ($true) {
     try {
         $scanResult = Invoke-LibraryScan
         # Auto-embed lyrics into FLAC files after each scan
         if ($scanResult.ok -gt 0 -and -not $DryRun) {
             Log "Triggering embed-lyrics for $($scanResult.ok) new .lrc files..."
-            & powershell -ExecutionPolicy Bypass -File $embedScript 2>$null
+            & powershell -ExecutionPolicy Bypass -File 'C:\Tools\lrclib-service\embed-lyrics.ps1' 2>$null
         } elseif ($scanResult.ok -gt 0 -and $DryRun) {
             Log "DRY: would trigger embed-lyrics for $($scanResult.ok) new .lrc files"
         }
