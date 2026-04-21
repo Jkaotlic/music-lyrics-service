@@ -1,4 +1,4 @@
-# config.ps1
+﻿# config.ps1
 #
 # Configuration for music-lyrics-service. Dot-sourced from lrclib-service.ps1 at startup.
 # If this file is missing, service falls back to legacy mode (LRCLib only).
@@ -20,7 +20,7 @@ $script:LibraryRoot = 'G:\Music\Library'
 
 # --- Yandex.Music ---
 $script:YandexRateLimitMs = 200
-$script:YandexMatchDurationTolerance = 3  # seconds
+$script:YandexMatchDurationTolerance = 15  # seconds
 $script:YandexMatchLevenshteinMax = 3
 $script:YandexUserAgent = 'Yandex-Music-Windows/5.00'
 # VERIFIED 2026-04-20: public HMAC secret documented at MarshalX/yandex-music-api
