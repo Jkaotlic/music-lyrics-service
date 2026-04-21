@@ -26,3 +26,9 @@ desktop.ini
 
 # Pester output
 testResults.xml
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
