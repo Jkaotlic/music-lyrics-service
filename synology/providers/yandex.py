@@ -41,26 +41,94 @@ def _levenshtein(a: str, b: str) -> int:
     return prev[lb]
 
 
-def _normalize_title(s: str) -> str:
-    """Remove feat/ft parenthetical, lowercase, strip punctuation."""
-    # Remove (feat. ...) and similar
-    s = re.sub(r"\s*[\(\[](feat|ft|with)[^\)\]]*[\)\]]", "", s, flags=re.IGNORECASE)
-    # Remove extra descriptors like (Radio Edit), (Remastered)
-    s = re.sub(r"\s*[\(\[][^\)\]]{1,40}[\)\]]", "", s)
+def _normalize_for_match(s: str) -> str:
+    """
+    Aggressive fuzzy-match normalization. Mirrors windows/providers/yandex.ps1
+    Normalize-ForMatch so Python and PowerShell produce identical keys.
+
+    Stays robust to:
+      - Whole-string brackets: "[AMATORY]" -> "amatory" (Yandex band names)
+      - Trailing parenthetical: "Song (Remastered 2011)" -> "song"
+      - Leading "The ": "The Beatles" -> "beatles"
+      - Spaced punctuation: "1 %" -> "1"
+    """
+    if not s:
+        return ""
     s = s.lower()
-    # Keep only alphanumerics and spaces
-    s = re.sub(r"[^\w\s]", "", s)
+    # Drop leading "the "
+    s = re.sub(r"^\s*the\s+", "", s)
+    # Strip a trailing parenthetical/bracketed suffix, but only if real content
+    # precedes it — so "[AMATORY]" (whole-string bracket) is preserved, while
+    # "Bohemian Rhapsody (Remastered 2011)" -> "Bohemian Rhapsody".
+    s = re.sub(r"^(.+?)\s*[\(\[\{][^\)\]\}]{1,60}[\)\]\}]\s*$", r"\1", s)
+    # Strip remaining bracket characters (keeps contents).
+    s = re.sub(r"[\[\]\(\)\{\}]", " ", s)
+    # Python 3 \w is Unicode-aware, so Cyrillic letters survive here.
+    s = re.sub(r"[^\w]+", " ", s)
     s = re.sub(r"\s+", " ", s).strip()
     return s
+
+
+# ---------------------------------------------------------------------------
+# Cyrillic -> Latin transliteration. Enables fuzzy matching a Latin-tagged
+# file ("Zemfira") against a Cyrillic Yandex artist ("Земфира"). The map is
+# built from Unicode codepoints to keep the source ASCII-safe.
+# ---------------------------------------------------------------------------
+
+_CYR_MAP: Optional[Dict[str, str]] = None
+
+
+def _get_cyr_map() -> Dict[str, str]:
+    global _CYR_MAP
+    if _CYR_MAP is not None:
+        return _CYR_MAP
+    latin = [
+        "a", "b", "v", "g", "d", "e", "e", "zh", "z", "i", "y",
+        "k", "l", "m", "n", "o", "p", "r", "s", "t", "u", "f",
+        "kh", "ts", "ch", "sh", "shch", "", "y", "", "e", "yu", "ya",
+    ]
+    # a..ya with yo inserted after ye (Cyrillic small letters block)
+    points = [
+        0x0430, 0x0431, 0x0432, 0x0433, 0x0434, 0x0435, 0x0451,
+        0x0436, 0x0437, 0x0438, 0x0439, 0x043A, 0x043B, 0x043C,
+        0x043D, 0x043E, 0x043F, 0x0440, 0x0441, 0x0442, 0x0443,
+        0x0444, 0x0445, 0x0446, 0x0447, 0x0448, 0x0449, 0x044A,
+        0x044B, 0x044C, 0x044D, 0x044E, 0x044F,
+    ]
+    _CYR_MAP = {chr(p): latin[i] for i, p in enumerate(points)}
+    return _CYR_MAP
+
+
+def _translit(s: str) -> str:
+    if not s:
+        return ""
+    m = _get_cyr_map()
+    return "".join(m.get(c, c) for c in s.lower())
+
+
+def _fuzzy_equal(a: str, b: str, lev_max: int) -> bool:
+    """Equal after direct Levenshtein, or after cross-alphabet transliteration."""
+    if a == b:
+        return True
+    if _levenshtein(a, b) <= lev_max:
+        return True
+    ta, tb = _translit(a), _translit(b)
+    if ta == tb:
+        return True
+    if _levenshtein(ta, tb) <= lev_max:
+        return True
+    return False
+
+
+# Backwards-compatible aliases (older tests import these).
+def _normalize_title(s: str) -> str:
+    return _normalize_for_match(s)
 
 
 def _normalize_artist(s: str) -> str:
-    """Lowercase, strip punctuation, take only primary artist (before comma/&)."""
+    # Still take only primary artist (before comma/&) before full normalization
     s = re.sub(r"[,&].*", "", s)
-    s = s.lower()
-    s = re.sub(r"[^\w\s]", "", s)
-    s = re.sub(r"\s+", " ", s).strip()
-    return s
+    return _normalize_for_match(s)
 
 
 def _track_matches(
@@ -68,32 +136,25 @@ def _track_matches(
     needle_title: str,
     needle_duration: int,
     candidate: Dict[str, Any],
-    duration_tol: int = 3,
-    lev_max: int = 3,
+    duration_tol: int = 30,
+    lev_max: int = 4,
 ) -> bool:
     """Return True if candidate dict matches the needle within tolerances."""
-    # Duration check (skip if needle_duration <= 0)
     if needle_duration > 0:
         cand_dur = int(candidate.get("durationMs", 0)) // 1000
         if abs(cand_dur - needle_duration) > duration_tol:
             return False
 
-    # Artist check — try primary artist from artists list
     cand_artists = candidate.get("artists", [])
     if cand_artists:
         cand_artist_str = cand_artists[0].get("name", "")
     else:
         cand_artist_str = candidate.get("artist", "")
-    norm_needle_artist = _normalize_artist(needle_artist)
-    norm_cand_artist = _normalize_artist(cand_artist_str)
-    if _levenshtein(norm_needle_artist, norm_cand_artist) > lev_max:
+    if not _fuzzy_equal(_normalize_artist(needle_artist), _normalize_artist(cand_artist_str), lev_max):
         return False
 
-    # Title check
     cand_title = candidate.get("title", "")
-    norm_needle_title = _normalize_title(needle_title)
-    norm_cand_title = _normalize_title(cand_title)
-    if _levenshtein(norm_needle_title, norm_cand_title) > lev_max:
+    if not _fuzzy_equal(_normalize_title(needle_title), _normalize_title(cand_title), lev_max):
         return False
 
     return True
@@ -168,8 +229,12 @@ def _search_track(
     user_agent = cfg.get("user_agent", "Yandex-Music-Windows/5.00")
     client_header = cfg.get("client_header", "YandexMusicAndroid/24023621")
     rate_limit_ms = int(cfg.get("rate_limit_ms", 200))
-    duration_tol = int(cfg.get("match_duration_tolerance", 3))
-    lev_max = int(cfg.get("match_levenshtein_max", 3))
+    # Bumped from 3s to 30s: Russian/original masters vs Yandex remasters often
+    # differ by 10-30s from silence/fade edits.
+    duration_tol = int(cfg.get("match_duration_tolerance", 30))
+    # Bumped from 3 to 4: transliteration fallback handles cross-alphabet cases,
+    # so a slightly looser Levenshtein is safe.
+    lev_max = int(cfg.get("match_levenshtein_max", 4))
 
     headers = _api_headers(token, user_agent, client_header)
     query = f"{artist} {track}"

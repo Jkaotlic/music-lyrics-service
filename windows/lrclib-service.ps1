@@ -1,13 +1,10 @@
 param(
     [string]$LibraryPath = 'G:\Music\Library',
     [int]$ScanInterval = 300,
-    [string]$LogFile = $null,   # defaults to <script-dir>\lrclib.log when null
+    [string]$LogFile = 'C:\Tools\lrclib-service\lrclib.log',
     [switch]$OneShot,
     [switch]$DryRun
 )
-if (-not $LogFile) {
-    $LogFile = Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) 'lrclib.log'
-}
 
 $ErrorActionPreference = 'Continue'
 $ProgressPreference = 'SilentlyContinue'
@@ -23,7 +20,7 @@ $OutputEncoding = [System.Text.Encoding]::UTF8
 # Dot-source config (optional) and providers
 $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $configPath = Join-Path $scriptRoot 'config.ps1'
-if (Test-Path $configPath) {
+if (Test-Path -LiteralPath $configPath) {
     . $configPath
     Write-Host "Loaded config from $configPath"
 } else {
@@ -32,7 +29,7 @@ if (Test-Path $configPath) {
 }
 foreach ($provName in $script:LyricsProviders) {
     $pfile = Join-Path $scriptRoot "providers\$($provName.ToLower()).ps1"
-    if (Test-Path $pfile) {
+    if (Test-Path -LiteralPath $pfile) {
         . $pfile
         Write-Host "Loaded provider: $provName"
     } else {
@@ -44,12 +41,12 @@ foreach ($provName in $script:LyricsProviders) {
 $ffprobe = $null
 $candidates = @(
     'C:\Program Files\Navidrome\ffprobe.exe',
-    (Join-Path $scriptRoot 'ffprobe.exe'),
+    'C:\Tools\lrclib-service\ffprobe.exe',
     'C:\ffmpeg\bin\ffprobe.exe',
-    "$env:LOCALAPPDATA\Microsoft\WinGet\Links\ffprobe.exe"
+    'C:\Users\user\AppData\Local\Microsoft\WinGet\Links\ffprobe.exe'
 )
 foreach ($p in $candidates) {
-    if (Test-Path $p) { $ffprobe = $p; break }
+    if (Test-Path -LiteralPath $p) { $ffprobe = $p; break }
 }
 if (-not $ffprobe) {
     $gc = Get-Command ffprobe.exe -ErrorAction SilentlyContinue
@@ -59,12 +56,12 @@ if (-not $ffprobe) { Write-Error "ffprobe not found in any known location"; exit
 
 # --- Logging ---
 $logDir = Split-Path $LogFile -Parent
-if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Path $logDir -Force | Out-Null }
+if (-not (Test-Path -LiteralPath $logDir)) { New-Item -ItemType Directory -Path $logDir -Force | Out-Null }
 
 function Log {
     param([string]$msg)
     $line = "{0} {1}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $msg
-    Add-Content -Path $LogFile -Value $line -Encoding UTF8
+    Add-Content -LiteralPath $LogFile -Value $line -Encoding UTF8
     Write-Host $line
 }
 
@@ -74,7 +71,7 @@ if ($DryRun) { Log "DRY-RUN mode enabled - no files written, no embed triggered"
 # --- Tag extraction via ffprobe JSON ---
 function Get-TrackInfo {
     param([string]$audioPath)
-    $raw = & $ffprobe -v quiet -print_format json -show_format "$audioPath" 2>$null
+    $raw = & $ffprobe -v quiet -print_format json -show_format $audioPath 2>$null
     if (-not $raw) { return $null }
     try { $json = $raw | ConvertFrom-Json } catch { return $null }
     if (-not $json.format -or -not $json.format.tags) { return $null }
@@ -104,7 +101,11 @@ function Get-TrackInfo {
 function Invoke-Track {
     param([string]$audioPath)
     $lrcPath = [System.IO.Path]::ChangeExtension($audioPath, '.lrc')
-    if (Test-Path $lrcPath) { return 'skip' }
+    # NOTE: -LiteralPath is REQUIRED. Without it, paths containing [ ] are
+    # interpreted as PowerShell glob patterns (character classes), causing
+    # Test-Path to return $false for files like "14 - [ost] dreamseeker.lrc"
+    # even when they exist, resulting in infinite re-processing loops.
+    if (Test-Path -LiteralPath $lrcPath) { return 'skip' }
 
     $info = Get-TrackInfo $audioPath
     if (-not $info) {
@@ -158,12 +159,12 @@ function Invoke-Track {
 # --- Full library scan ---
 function Invoke-LibraryScan {
     $extensions = @('.mp3','.flac','.m4a','.ogg','.opus','.wav','.aac')
-    $audioFiles = Get-ChildItem -Path $LibraryPath -Recurse -File -ErrorAction SilentlyContinue |
+    $audioFiles = Get-ChildItem -LiteralPath $LibraryPath -Recurse -File -ErrorAction SilentlyContinue |
                   Where-Object { $extensions -contains $_.Extension.ToLower() }
     $todo = @()
     foreach ($f in $audioFiles) {
         $lrc = [System.IO.Path]::ChangeExtension($f.FullName, '.lrc')
-        if (-not (Test-Path $lrc)) { $todo += $f }
+        if (-not (Test-Path -LiteralPath $lrc)) { $todo += $f }
     }
     Log "Scan start: total=$($audioFiles.Count)  todo=$($todo.Count)"
 
@@ -198,7 +199,7 @@ while ($true) {
         # Auto-embed lyrics into FLAC files after each scan
         if ($scanResult.ok -gt 0 -and -not $DryRun) {
             Log "Triggering embed-lyrics for $($scanResult.ok) new .lrc files..."
-            & powershell -ExecutionPolicy Bypass -File (Join-Path $scriptRoot 'embed-lyrics.ps1') 2>$null
+            & powershell -ExecutionPolicy Bypass -File 'C:\Tools\lrclib-service\embed-lyrics.ps1' 2>$null
         } elseif ($scanResult.ok -gt 0 -and $DryRun) {
             Log "DRY: would trigger embed-lyrics for $($scanResult.ok) new .lrc files"
         }

@@ -25,8 +25,12 @@ rate_limit_ms = 200
 # Chmod 600 recommended.
 token_path = /volume1/docker/lyrics-pipeline/yandex.token
 rate_limit_ms = 200
-match_duration_tolerance = 3
-match_levenshtein_max = 3
+# Duration tolerance (sec). Bumped 3->30: Russian masters often differ by
+# 15-30s vs Yandex remasters due to silence/fade edits.
+match_duration_tolerance = 30
+# Levenshtein threshold. Bumped 3->4: safe now that we also do Cyrillic<->Latin
+# transliteration fallback for cross-alphabet matches (Zemfira vs Земфира).
+match_levenshtein_max = 4
 user_agent = Yandex-Music-Windows/5.00
 # Public, documented in MarshalX/yandex-music-api
 hmac_secret = p93jhgh689SBReK6ghtw62

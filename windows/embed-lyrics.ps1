@@ -1,29 +1,23 @@
 param(
     [string]$LibraryPath = 'G:\Music\Library',
-    [string]$LogFile = ''
+    [string]$LogFile = 'C:\Tools\lrclib-service\embed-lyrics.log'
 )
 
 $ErrorActionPreference = 'Continue'
-
-# Resolve LogFile to script dir if not specified
-if (-not $LogFile) {
-    $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
-    $LogFile = Join-Path $scriptRoot 'embed-lyrics.log'
-}
-
-function Log { param([string]$msg); $l = "{0} {1}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $msg; Add-Content -Path $LogFile -Value $l -Encoding UTF8; Write-Host $l }
+function Log { param([string]$msg); $l = "{0} {1}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $msg; Add-Content -LiteralPath $LogFile -Value $l -Encoding UTF8; Write-Host $l }
 
 $metaflac = (Get-Command metaflac.exe -ErrorAction SilentlyContinue).Source
-if (-not $metaflac) { Write-Error "metaflac not found. Install via: winget install xiph.flac"; exit 2 }
+if (-not $metaflac) { Write-Error "metaflac not found"; exit 2 }
 
-Log "=== embed-lyrics v6 (LRC-aware, force-overwrites stale plain) metaflac=$metaflac ==="
+Log "=== embed-lyrics v7 (LRC-aware, -LiteralPath safe) metaflac=$metaflac ==="
 
-$flacFiles = Get-ChildItem -Path $LibraryPath -Recurse -File -Filter '*.flac' -ErrorAction SilentlyContinue
+$flacFiles = Get-ChildItem -LiteralPath $LibraryPath -Recurse -File -Filter '*.flac' -ErrorAction SilentlyContinue
 $stats = @{ embedded = 0; skipped = 0; noLrc = 0; err = 0; mp3skip = 0 }
 
 foreach ($f in $flacFiles) {
     $lrcPath = [System.IO.Path]::ChangeExtension($f.FullName, '.lrc')
-    if (-not (Test-Path $lrcPath)) { $stats.noLrc++; continue }
+    # -LiteralPath: prevent [ ] in filenames from being treated as glob patterns.
+    if (-not (Test-Path -LiteralPath $lrcPath)) { $stats.noLrc++; continue }
 
     # Read fresh .lrc content first; it is the source of truth
     $lrcRaw = [System.IO.File]::ReadAllText($lrcPath, [System.Text.UTF8Encoding]::new($false)).Trim()
@@ -71,7 +65,7 @@ foreach ($f in $flacFiles) {
         $stats.err++
         Log "ERR: $($f.Name) $($_.Exception.Message)"
     }
-    Remove-Item $tmpTag -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $tmpTag -Force -ErrorAction SilentlyContinue
 }
 
-Log "=== embed-lyrics v6 done: embedded=$($stats.embedded) skipped=$($stats.skipped) noLrc=$($stats.noLrc) err=$($stats.err) ==="
+Log "=== embed-lyrics v7 done: embedded=$($stats.embedded) skipped=$($stats.skipped) noLrc=$($stats.noLrc) err=$($stats.err) ==="

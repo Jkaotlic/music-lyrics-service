@@ -1,4 +1,5 @@
-# Yandex.Music lyrics provider. Pure-function helpers first; API calls added in Task 8.
+# C:\Tools\lrclib-service\providers\yandex.ps1
+# Yandex.Music lyrics provider with Cyrillic-aware fuzzy matching.
 
 function Get-LevenshteinDistance {
     [CmdletBinding()]
@@ -30,21 +31,92 @@ function Get-LevenshteinDistance {
     return $d[$n, $m]
 }
 
-function Normalize-TrackTitle {
+# ----------------------------------------------------------------------------
+# Normalization: strip brackets, punctuation, diacritics. Keeps Unicode letters
+# (including Cyrillic) and digits. Used before Levenshtein so matches are robust
+# to "[AMATORY]" vs "Amatory", "1 %" vs "1%", "Song (Remastered 2011)" vs "Song".
+# ----------------------------------------------------------------------------
+function Normalize-ForMatch {
     [CmdletBinding()]
-    param([string]$Title)
-    # Strip trailing bracketed suffixes like "(Remastered 2011)", "[Bonus Track]", "(Live)"
-    $clean = $Title -replace '\s*[\(\[].*?[\)\]]\s*$'
-    return $clean.Trim().ToLowerInvariant()
+    param([AllowEmptyString()][string]$Value)
+    if ([string]::IsNullOrEmpty($Value)) { return '' }
+    $s = $Value.ToLowerInvariant()
+    # Drop leading "The " for tolerance ("Beatles" ~ "The Beatles")
+    $s = $s -replace '^\s*the\s+', ''
+    # Strip a TRAILING parenthetical/bracketed suffix (Remastered 2011, Live,
+    # feat. X, Bonus Track, etc.) - but only if there is real content before
+    # it. Guarded so that whole-string brackets like "[AMATORY]" are NOT
+    # wiped away - those are band names that must be preserved.
+    $s = $s -replace '^(.+?)\s*[\(\[\{][^\)\]\}]{1,60}[\)\]\}]\s*$', '$1'
+    # Strip any remaining bracket characters but keep their contents
+    # ("[AMATORY]" -> " AMATORY " -> "amatory" after collapse).
+    $s = $s -replace '[\[\]\(\)\{\}]', ' '
+    # Replace any non-letter / non-digit with space. \p{L} matches Unicode
+    # letters including Cyrillic; \p{N} matches digits.
+    $s = $s -replace '[^\p{L}\p{N}]+', ' '
+    $s = ($s -replace '\s+', ' ').Trim()
+    return $s
 }
 
-function Normalize-ArtistName {
-    [CmdletBinding()]
-    param([string]$Artist)
-    # Strip leading "The " for tolerance: "Beatles" ≈ "The Beatles"
-    $clean = $Artist -ireplace '^\s*the\s+'
-    return $clean.Trim().ToLowerInvariant()
+# ----------------------------------------------------------------------------
+# Transliteration map Cyrillic -> Latin (GOST-ish). Built dynamically from Unicode
+# codepoints so the SCRIPT source stays pure ASCII - this avoids the PS 5.1
+# "UTF-8 without BOM => cp1251 parse => broken string literal" footgun (see
+# feedback_ps51_utf8_console.md / feedback_powershell_ascii_only.md).
+# ----------------------------------------------------------------------------
+$script:__TranslitMap = $null
+function Get-TranslitMap {
+    if ($null -ne $script:__TranslitMap) { return $script:__TranslitMap }
+    # a b v g d e e zh z i y k l m n o p r s t u f kh ts ch sh shch '' y '' e yu ya
+    $latin = @('a','b','v','g','d','e','e','zh','z','i','y','k','l','m','n','o','p','r','s','t','u','f','kh','ts','ch','sh','shch','','y','','e','yu','ya')
+    # U+0430..U+044F = a..ya lowercase Cyrillic block, with U+0451 = yo inserted after ye
+    $cyrPoints = @(0x0430,0x0431,0x0432,0x0433,0x0434,0x0435,0x0451,0x0436,0x0437,0x0438,0x0439,0x043A,0x043B,0x043C,0x043D,0x043E,0x043F,0x0440,0x0441,0x0442,0x0443,0x0444,0x0445,0x0446,0x0447,0x0448,0x0449,0x044A,0x044B,0x044C,0x044D,0x044E,0x044F)
+    $m = @{}
+    for ($i = 0; $i -lt $cyrPoints.Length; $i++) {
+        $m[[char]$cyrPoints[$i]] = $latin[$i]
+    }
+    $script:__TranslitMap = $m
+    return $m
 }
+
+function ConvertTo-Translit {
+    [CmdletBinding()]
+    param([AllowEmptyString()][string]$Value)
+    if ([string]::IsNullOrEmpty($Value)) { return '' }
+    $lower = $Value.ToLowerInvariant()
+    $map = Get-TranslitMap
+    $sb = New-Object System.Text.StringBuilder
+    foreach ($c in $lower.ToCharArray()) {
+        if ($map.ContainsKey($c)) { [void]$sb.Append($map[$c]) }
+        else { [void]$sb.Append($c) }
+    }
+    return $sb.ToString()
+}
+
+# ----------------------------------------------------------------------------
+# Fuzzy equality: direct Levenshtein first, then transliterated comparison so
+# a Latin needle (e.g. "Zemfira") matches a Cyrillic candidate returned by Yandex
+# local FLAC tag is Latin but Yandex indexes the artist in Cyrillic).
+# ----------------------------------------------------------------------------
+function Test-FuzzyEqual {
+    [CmdletBinding()]
+    param(
+        [AllowEmptyString()][string]$A,
+        [AllowEmptyString()][string]$B
+    )
+    if ($A -eq $B) { return $true }
+    $max = if ($script:YandexMatchLevenshteinMax) { $script:YandexMatchLevenshteinMax } else { 4 }
+    if ((Get-LevenshteinDistance $A $B) -le $max) { return $true }
+    $ta = ConvertTo-Translit $A
+    $tb = ConvertTo-Translit $B
+    if ($ta -eq $tb) { return $true }
+    if ((Get-LevenshteinDistance $ta $tb) -le $max) { return $true }
+    return $false
+}
+
+# Backwards-compat aliases (old names used by tests).
+function Normalize-TrackTitle  { param([string]$Title)  return (Normalize-ForMatch $Title) }
+function Normalize-ArtistName  { param([string]$Artist) return (Normalize-ForMatch $Artist) }
 
 function Test-YandexTrackMatches {
     [CmdletBinding()]
@@ -62,17 +134,13 @@ function Test-YandexTrackMatches {
         if ($diff -gt $script:YandexMatchDurationTolerance) { return $false }
     }
 
-    $needleArtist = Normalize-ArtistName $Needle.Artist
-    $candidateArtist = Normalize-ArtistName ($Candidate.artists[0].name)
-    if ((Get-LevenshteinDistance $needleArtist $candidateArtist) -gt $script:YandexMatchLevenshteinMax) {
-        return $false
-    }
+    $nArtist = Normalize-ForMatch $Needle.Artist
+    $cArtist = Normalize-ForMatch ($Candidate.artists[0].name)
+    if (-not (Test-FuzzyEqual $nArtist $cArtist)) { return $false }
 
-    $needleTitle = Normalize-TrackTitle $Needle.Track
-    $candidateTitle = Normalize-TrackTitle $Candidate.title
-    if ((Get-LevenshteinDistance $needleTitle $candidateTitle) -gt $script:YandexMatchLevenshteinMax) {
-        return $false
-    }
+    $nTitle = Normalize-ForMatch $Needle.Track
+    $cTitle = Normalize-ForMatch $Candidate.title
+    if (-not (Test-FuzzyEqual $nTitle $cTitle)) { return $false }
 
     return $true
 }
@@ -102,10 +170,10 @@ function New-YandexHmacSignature {
 function Get-YandexToken {
     [CmdletBinding()]
     param()
-    if (-not (Test-Path $script:YandexTokenPath)) {
+    if (-not (Test-Path -LiteralPath $script:YandexTokenPath)) {
         throw "Yandex token not found at $script:YandexTokenPath"
     }
-    $raw = Get-Content $script:YandexTokenPath -Raw -ErrorAction Stop
+    $raw = Get-Content -LiteralPath $script:YandexTokenPath -Raw -ErrorAction Stop
     return $raw.Trim()
 }
 
@@ -124,14 +192,14 @@ function Set-YandexAuthFailedFlag {
     [CmdletBinding()]
     param([string]$Reason)
     $line = "[$((Get-Date).ToString('yyyy-MM-dd HH:mm:ss'))] $Reason"
-    Add-Content -Path $script:YandexAuthFailedFlag -Value $line -Encoding UTF8
+    Add-Content -LiteralPath $script:YandexAuthFailedFlag -Value $line -Encoding UTF8
 }
 
 function Set-YandexSignatureFailedFlag {
     [CmdletBinding()]
     param([string]$Reason)
     $line = "[$((Get-Date).ToString('yyyy-MM-dd HH:mm:ss'))] $Reason"
-    Add-Content -Path $script:YandexSignatureFailedFlag -Value $line -Encoding UTF8
+    Add-Content -LiteralPath $script:YandexSignatureFailedFlag -Value $line -Encoding UTF8
 }
 
 function Search-YandexTrack {
@@ -159,15 +227,17 @@ function Search-YandexTrack {
     if (-not $r.result -or -not $r.result.tracks -or -not $r.result.tracks.results) { return $null }
 
     $needle = @{ Artist = $Artist; Track = $Track; Duration = $Duration }
-    $matches = @($r.result.tracks.results | Where-Object {
+    # NOTE: local variable name deliberately avoids $matches (an automatic PS
+    # variable populated by -match/-like operators, which can clash here).
+    $hits = @($r.result.tracks.results | Where-Object {
         Test-YandexTrackMatches -Needle $needle -Candidate $_
     })
-    if ($matches.Count -eq 0) { return $null }
+    if ($hits.Count -eq 0) { return $null }
 
     if ($Duration -gt 0) {
-        $best = $matches | Sort-Object { [Math]::Abs([int]($_.durationMs / 1000) - $Duration) } | Select-Object -First 1
+        $best = $hits | Sort-Object { [Math]::Abs([int]($_.durationMs / 1000) - $Duration) } | Select-Object -First 1
     } else {
-        $best = $matches[0]
+        $best = $hits[0]
     }
     return $best
 }
@@ -228,8 +298,8 @@ function Invoke-LyricsProvider-Yandex {
     }
 
     # Circuit-break if auth flag is fresh (< 1h old)
-    if (Test-Path $script:YandexAuthFailedFlag) {
-        $age = (Get-Date) - (Get-Item $script:YandexAuthFailedFlag).LastWriteTime
+    if (Test-Path -LiteralPath $script:YandexAuthFailedFlag) {
+        $age = (Get-Date) - (Get-Item -LiteralPath $script:YandexAuthFailedFlag).LastWriteTime
         if ($age.TotalMinutes -lt 60) {
             return $null
         }

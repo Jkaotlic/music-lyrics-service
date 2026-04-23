@@ -68,7 +68,8 @@ class TestNormalizeTitle(unittest.TestCase):
 
 class TestNormalizeArtist(unittest.TestCase):
     def test_lowercases(self):
-        self.assertEqual(_normalize_artist("The Beatles"), "the beatles")
+        # "the " is now stripped to tolerate "Beatles" vs "The Beatles".
+        self.assertEqual(_normalize_artist("The Beatles"), "beatles")
 
     def test_drops_secondary_artist_comma(self):
         result = _normalize_artist("Queen, David Bowie")
@@ -82,6 +83,12 @@ class TestNormalizeArtist(unittest.TestCase):
 
     def test_zemfira_unchanged(self):
         self.assertEqual(_normalize_artist("Земфира"), "земфира")
+
+    def test_whole_string_brackets_preserved(self):
+        # Yandex indexes some bands with bracketed names, e.g. "[AMATORY]".
+        # A locally-tagged FLAC says "Amatory" - both must normalize to "amatory".
+        self.assertEqual(_normalize_artist("[AMATORY]"), "amatory")
+        self.assertEqual(_normalize_artist("Amatory"), "amatory")
 
 
 class TestTrackMatches(unittest.TestCase):
@@ -157,6 +164,27 @@ class TestTrackMatches(unittest.TestCase):
         cand = {"title": "Let It Be", "artists": [{"name": "The Beatles"}]}
         # With needle duration 243 and tol 3 this should fail (cand_dur=0)
         self.assertFalse(_track_matches("The Beatles", "Let It Be", 243, cand, duration_tol=3))
+
+    # --- Regression: cross-alphabet matching (Latin needle, Cyrillic candidate) ---
+
+    def test_latin_needle_matches_cyrillic_candidate(self):
+        """Zemfira (Latin tag) must match 'Земфира' (Cyrillic Yandex result).
+
+        Before the transliteration fallback this mismatched on every Russian
+        artist whose local tag happened to be in Latin.
+        """
+        cand = self._make_candidate("Земфира", "Искала", 214)
+        self.assertTrue(_track_matches("Zemfira", "Iskala", 214, cand))
+
+    def test_bracketed_band_name(self):
+        """'[AMATORY]' on Yandex matches plain 'Amatory' local tag."""
+        cand = self._make_candidate("[AMATORY]", "1 %", 216)
+        self.assertTrue(_track_matches("Amatory", "1%", 216, cand))
+
+    def test_russian_title_latin_needle(self):
+        """Noize MC: English artist, Cyrillic title on Yandex, Latin title in tag."""
+        cand = self._make_candidate("Noize MC", "Выдыхай", 193)
+        self.assertTrue(_track_matches("Noize MC", "Vydyhai", 193, cand))
 
 
 if __name__ == "__main__":
