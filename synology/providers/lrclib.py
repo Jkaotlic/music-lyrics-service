@@ -1,5 +1,6 @@
 """LRCLib provider — port of windows/providers/lrclib.ps1 (Task 7)."""
 from __future__ import annotations
+import json
 import time
 from typing import Optional, Dict, Any
 from urllib.parse import quote
@@ -26,7 +27,13 @@ def get_lyrics(
             r = requests.get(url, timeout=15)
             _sleep()
             if r.status_code == 200:
-                return r.json()
+                # LRCLib returns "Content-Type: application/json" with no charset.
+                # Some HTTP clients (notably PS 5.1 Invoke-RestMethod, and older
+                # requests versions falling back to apparent_encoding) then
+                # decode the body as Latin-1, which silently double-encodes
+                # Cyrillic when the result is re-serialised as UTF-8. Force
+                # UTF-8 off the raw byte payload to keep the pipeline safe.
+                return json.loads(r.content.decode("utf-8"))
         except requests.RequestException:
             pass
         return None

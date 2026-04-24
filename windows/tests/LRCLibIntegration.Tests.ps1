@@ -39,4 +39,35 @@ Describe 'Invoke-LyricsProvider-LRCLib integration' -Tag 'Integration' {
         $r | Should Not BeNullOrEmpty
         $r.IsSynced | Should Be $true
     }
+
+    It 'decodes Cyrillic lyrics as UTF-8 (no Latin-1 double-encoding)' {
+        # Regression test for the PS 5.1 Invoke-RestMethod bug where response
+        # bodies without charset get decoded as ISO-8859-1. LRCLib sends
+        # "application/json" with no charset, so Russian tracks were returning
+        # double-encoded mojibake (codepoints U+0080..U+00FF instead of proper
+        # Cyrillic U+0400..U+04FF). The fix in Invoke-LrclibJson forces a
+        # raw-byte UTF-8 decode.
+        $zemfira = ''
+        foreach ($cp in @(0x0417,0x0435,0x043C,0x0444,0x0438,0x0440,0x0430)) { $zemfira += [char]$cp }
+        $iskala = ''
+        foreach ($cp in @(0x0418,0x0441,0x043A,0x0430,0x043B,0x0430)) { $iskala += [char]$cp }
+        $r = Invoke-LyricsProvider-LRCLib -Artist $zemfira -Track $iskala -Duration -1
+        if ($r) {
+            # If LRCLib returned a hit, ensure there are NO Latin-1-range codepoints
+            $latin1Count = 0
+            foreach ($c in $r.Text.ToCharArray()) {
+                $cp = [int]$c
+                if ($cp -ge 0x0080 -and $cp -le 0x00FF) { $latin1Count++ }
+            }
+            $latin1Count | Should Be 0
+            # And that there ARE proper Cyrillic codepoints
+            $cyrillicCount = 0
+            foreach ($c in $r.Text.ToCharArray()) {
+                $cp = [int]$c
+                if ($cp -ge 0x0400 -and $cp -le 0x04FF) { $cyrillicCount++ }
+            }
+            $cyrillicCount | Should BeGreaterThan 0
+        }
+        # If LRCLib legitimately has no hit, the test passes (no regression to detect)
+    }
 }
