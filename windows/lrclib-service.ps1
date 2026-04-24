@@ -192,16 +192,36 @@ if ($OneShot) {
     exit 0
 }
 
+# --- Embedder helper ---
+# Prefer the unified Python embedder (FLAC + MP3 + M4A, mutagen-based). Falls
+# back to the legacy PS metaflac embedder if the venv is missing - useful for
+# bootstrapping before the first provisioning run.
+$script:PyEmbedder = 'C:\Tools\lrclib-service\.venv\Scripts\python.exe'
+$script:PyEmbedScript = 'C:\Tools\lrclib-service\embed-all-lyrics.py'
+$script:PsEmbedScript = 'C:\Tools\lrclib-service\embed-lyrics.ps1'
+$script:EmbedLogPath = 'C:\Tools\lrclib-service\embed-all.log'
+
+function Invoke-EmbedPass {
+    param([string]$LibraryPath)
+    if ((Test-Path -LiteralPath $script:PyEmbedder) -and (Test-Path -LiteralPath $script:PyEmbedScript)) {
+        & $script:PyEmbedder $script:PyEmbedScript --library $LibraryPath --log $script:EmbedLogPath 2>$null
+    } elseif (Test-Path -LiteralPath $script:PsEmbedScript) {
+        & powershell -ExecutionPolicy Bypass -File $script:PsEmbedScript 2>$null
+    } else {
+        Log "No embedder available (Python venv and PS fallback both missing)"
+    }
+}
+
 # Service mode
 while ($true) {
     try {
         $scanResult = Invoke-LibraryScan
-        # Auto-embed lyrics into FLAC files after each scan
+        # Auto-embed lyrics (FLAC + MP3 + M4A) after each scan that produced new .lrc files
         if ($scanResult.ok -gt 0 -and -not $DryRun) {
-            Log "Triggering embed-lyrics for $($scanResult.ok) new .lrc files..."
-            & powershell -ExecutionPolicy Bypass -File 'C:\Tools\lrclib-service\embed-lyrics.ps1' 2>$null
+            Log "Triggering embed pass for $($scanResult.ok) new .lrc files..."
+            Invoke-EmbedPass -LibraryPath $LibraryPath
         } elseif ($scanResult.ok -gt 0 -and $DryRun) {
-            Log "DRY: would trigger embed-lyrics for $($scanResult.ok) new .lrc files"
+            Log "DRY: would trigger embed pass for $($scanResult.ok) new .lrc files"
         }
     }
     catch { Log "Fatal scan error: $($_.Exception.Message)" }
