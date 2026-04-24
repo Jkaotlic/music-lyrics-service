@@ -216,12 +216,16 @@ function Invoke-EmbedPass {
 while ($true) {
     try {
         $scanResult = Invoke-LibraryScan
-        # Auto-embed lyrics (FLAC + MP3 + M4A) after each scan that produced new .lrc files
-        if ($scanResult.ok -gt 0 -and -not $DryRun) {
-            Log "Triggering embed pass for $($scanResult.ok) new .lrc files..."
+        # Always run embed pass - it is idempotent (mutagen skips files whose tag
+        # already matches the .lrc), AND this catches the case where Lidarr /
+        # decluttarr re-imports a file and silently strips its USLT / LYRICS
+        # tag. Gating only on ok>0 would miss those re-imports because no new
+        # .lrc sidecar was created.
+        if (-not $DryRun) {
+            Log "Triggering embed pass (scan ok=$($scanResult.ok) none=$($scanResult.none))..."
             Invoke-EmbedPass -LibraryPath $LibraryPath
-        } elseif ($scanResult.ok -gt 0 -and $DryRun) {
-            Log "DRY: would trigger embed pass for $($scanResult.ok) new .lrc files"
+        } else {
+            Log "DRY: would trigger embed pass after scan"
         }
     }
     catch { Log "Fatal scan error: $($_.Exception.Message)" }
