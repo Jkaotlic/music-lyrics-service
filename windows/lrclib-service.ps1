@@ -2,6 +2,12 @@ param(
     [string]$LibraryPath = 'G:\Music\Library',
     [int]$ScanInterval = 300,
     [string]$LogFile = 'C:\Tools\lrclib-service\lrclib.log',
+    # Negative cache: tracks that no provider has lyrics for. Without it every
+    # scan cycle re-queries every hopeless track - 364 misses x 288 cycles/day
+    # was ~105k pointless requests to lrclib.net per day and a 105 MB log.
+    [string]$MissCachePath = 'C:\Tools\lrclib-service\misses.json',
+    [int]$MissTtlDays = 14,
+    [int]$MaxLogSizeMB = 10,
     [switch]$OneShot,
     [switch]$DryRun
 )
@@ -63,6 +69,48 @@ function Log {
     $line = "{0} {1}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $msg
     Add-Content -LiteralPath $LogFile -Value $line -Encoding UTF8
     Write-Host $line
+    # Rotate. This service logs one line per track per cycle; unrotated it reached
+    # 105 MB. Keep a single .old generation.
+    try {
+        $fi = Get-Item -LiteralPath $LogFile -ErrorAction Stop
+        if ($fi.Length -gt ($MaxLogSizeMB * 1MB)) {
+            Move-Item -LiteralPath $LogFile -Destination "$LogFile.old" -Force
+        }
+    } catch {}
+}
+
+# --- Negative cache -------------------------------------------------------
+# Key: "<path>|<length>|<mtime ticks>". Any change to the file (retag, replace)
+# changes the key, so the track is retried automatically.
+function Get-MissKey {
+    param($fileInfo)
+    return "{0}|{1}|{2}" -f $fileInfo.FullName, $fileInfo.Length, $fileInfo.LastWriteTimeUtc.Ticks
+}
+
+function Import-MissCache {
+    if (-not (Test-Path -LiteralPath $MissCachePath)) { return @{} }
+    try {
+        $raw = Get-Content -LiteralPath $MissCachePath -Raw -ErrorAction Stop
+        if (-not $raw) { return @{} }
+        $obj = $raw | ConvertFrom-Json -ErrorAction Stop
+        $h = @{}
+        foreach ($p in $obj.PSObject.Properties) { $h[$p.Name] = $p.Value }
+        return $h
+    } catch {
+        Log "MISSCACHE: unreadable ($($_.Exception.Message)), starting empty"
+        return @{}
+    }
+}
+
+function Export-MissCache {
+    param([hashtable]$cache)
+    try {
+        $tmp = "$MissCachePath.tmp"
+        ($cache | ConvertTo-Json -Depth 3 -Compress) | Set-Content -LiteralPath $tmp -Encoding UTF8
+        Move-Item -LiteralPath $tmp -Destination $MissCachePath -Force
+    } catch {
+        Log "MISSCACHE: save failed - $($_.Exception.Message)"
+    }
 }
 
 Log "=== lrclib-service start  library='$LibraryPath'  interval=${ScanInterval}s  ffprobe='$ffprobe' ==="
@@ -161,20 +209,48 @@ function Invoke-LibraryScan {
     $extensions = @('.mp3','.flac','.m4a','.ogg','.opus','.wav','.aac')
     $audioFiles = Get-ChildItem -LiteralPath $LibraryPath -Recurse -File -ErrorAction SilentlyContinue |
                   Where-Object { $extensions -contains $_.Extension.ToLower() }
+    $missCache = Import-MissCache
+    $now = Get-Date
+    $ttl = New-TimeSpan -Days $MissTtlDays
+
     $todo = @()
+    $cached = 0
     foreach ($f in $audioFiles) {
         $lrc = [System.IO.Path]::ChangeExtension($f.FullName, '.lrc')
-        if (-not (Test-Path -LiteralPath $lrc)) { $todo += $f }
+        if (Test-Path -LiteralPath $lrc) { continue }
+
+        $key = Get-MissKey $f
+        if ($missCache.ContainsKey($key)) {
+            # [datetime]::TryParse needs [ref] to an already-typed datetime variable;
+            # passing [ref]$null fails overload resolution on PS 5.1. Parse in a
+            # try/catch instead - simpler and version-proof.
+            $seen = $null
+            try { $seen = [datetime]::Parse([string]$missCache[$key], [System.Globalization.CultureInfo]::InvariantCulture) } catch { $seen = $null }
+            if ($seen -and (($now - $seen) -lt $ttl)) {
+                $cached++
+                continue
+            }
+        }
+        $todo += $f
     }
-    Log "Scan start: total=$($audioFiles.Count)  todo=$($todo.Count)"
+    Log "Scan start: total=$($audioFiles.Count)  todo=$($todo.Count)  suppressed_by_cache=$cached"
 
     $stats = @{ ok = 0; none = 0; notag = 0; skip = 0; err = 0 }
     $i = 0
+    $cacheDirty = $false
     foreach ($f in $todo) {
         $i++
+        $key = Get-MissKey $f
         try {
             $r = Invoke-Track $f.FullName
             if ($stats.ContainsKey($r)) { $stats[$r] += 1 }
+            if ($r -eq 'none' -or $r -eq 'notag') {
+                $missCache[$key] = $now.ToString('o')
+                $cacheDirty = $true
+            } elseif ($r -eq 'ok' -and $missCache.ContainsKey($key)) {
+                $missCache.Remove($key)
+                $cacheDirty = $true
+            }
         } catch {
             $stats.err += 1
             Log "ERR on $($f.FullName): $($_.Exception.Message)"
@@ -182,7 +258,16 @@ function Invoke-LibraryScan {
         Start-Sleep -Milliseconds 200  # rate limit 5 req/s
         if ($i % 50 -eq 0) { Log "Progress: $i / $($todo.Count)" }
     }
-    Log "Scan done: ok=$($stats.ok) none=$($stats.none) notag=$($stats.notag) err=$($stats.err)"
+
+    # Drop entries whose file no longer exists, so the cache cannot grow forever.
+    $live = @{}
+    foreach ($f in $audioFiles) { $live[(Get-MissKey $f)] = $true }
+    foreach ($k in @($missCache.Keys)) {
+        if (-not $live.ContainsKey($k)) { $missCache.Remove($k); $cacheDirty = $true }
+    }
+    if ($cacheDirty -and -not $DryRun) { Export-MissCache $missCache }
+
+    Log "Scan done: ok=$($stats.ok) none=$($stats.none) notag=$($stats.notag) err=$($stats.err) cache_entries=$($missCache.Count)"
     return $stats
 }
 
