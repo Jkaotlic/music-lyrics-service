@@ -32,29 +32,56 @@ def load_config(path: str) -> configparser.ConfigParser:
 
 
 def extract_tags(path: Path) -> Optional[dict]:
-    """Return {'artist','title','album','duration'} or None."""
+    """Return {'artist','title','album','duration'} or None.
+
+    Tag-key lookup is format-aware: MP3 stores artist/title/album in ID3v2
+    frames (TPE1/TIT2/TALB), FLAC and OGG use Vorbis comments
+    ('artist'/'title'/'album'), M4A/MP4 uses iTunes atoms (\\xa9ART/\\xa9nam/\\xa9alb).
+    Using a single Vorbis-only lookup silently returns None for every MP3.
+    """
     try:
         audio = MutagenFile(str(path))
         if audio is None:
             return None
-        tags = audio.tags or {}
+        tags = audio.tags
 
-        def t(name):
-            v = tags.get(name) or tags.get(name.upper())
-            if isinstance(v, list) and v:
-                return str(v[0])
-            return str(v) if v else ""
+        def first(keys):
+            if tags is None:
+                return ""
+            for k in keys:
+                v = tags.get(k)
+                if not v:
+                    continue
+                if isinstance(v, list) and v:
+                    v = v[0]
+                s = str(v).strip()
+                if s:
+                    return s
+            return ""
 
-        artist = t("artist") or t("ARTIST")
-        title = t("title") or t("TITLE")
-        album = t("album") or t("ALBUM") or ""
-        duration = int(audio.info.length) if hasattr(audio, "info") and audio.info else -1
+        ext = path.suffix.lower()
+        if ext == ".mp3":
+            artist = first(["TPE1", "TPE2"])
+            title = first(["TIT2"])
+            album = first(["TALB"])
+        elif ext in (".flac", ".ogg", ".opus"):
+            artist = first(["artist", "ARTIST", "albumartist", "ALBUMARTIST"])
+            title = first(["title", "TITLE"])
+            album = first(["album", "ALBUM"])
+        elif ext in (".m4a", ".mp4"):
+            artist = first(["\xa9ART", "aART"])
+            title = first(["\xa9nam"])
+            album = first(["\xa9alb"])
+        else:
+            return None
+
         if not artist or not title:
             return None
+        duration = int(audio.info.length) if hasattr(audio, "info") and audio.info else -1
         return {
-            "artist": artist.strip(),
-            "title": title.strip(),
-            "album": album.strip(),
+            "artist": artist,
+            "title": title,
+            "album": album,
             "duration": duration,
         }
     except Exception:
